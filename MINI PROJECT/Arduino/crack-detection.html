@@ -1,0 +1,353 @@
+f<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crack Detection — ESP32</title>
+  <script src="https://cdn.jsdelivr.net/npm/inferencejs"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111;
+      --border: #222;
+      --accent: #ff3333;
+      --accent-dim: rgba(255,51,51,0.15);
+      --text: #e8e8e8;
+      --muted: #555;
+      --green: #00e676;
+      --amber: #ffab00;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+      gap: 20px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 700px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+
+    h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    h1 span { color: var(--accent); }
+
+    #status-pill {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--muted);
+      color: var(--muted);
+      transition: all 0.3s;
+    }
+    #status-pill.ready   { border-color: var(--green); color: var(--green); }
+    #status-pill.error   { border-color: var(--accent); color: var(--accent); }
+    #status-pill.loading { border-color: var(--amber); color: var(--amber); }
+
+    .canvas-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 700px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .canvas-wrap::before,
+    .canvas-wrap::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-color: var(--accent);
+      border-style: solid;
+      z-index: 2;
+    }
+    .canvas-wrap::before { top: 0; left: 0; border-width: 2px 0 0 2px; }
+    .canvas-wrap::after  { bottom: 0; right: 0; border-width: 0 2px 2px 0; }
+
+    #overlay-msg {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--muted);
+      background: rgba(0,0,0,0.6);
+      z-index: 1;
+    }
+
+    .stats-row {
+      width: 100%;
+      max-width: 700px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px 16px;
+    }
+
+    .stat-card .label {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .stat-card .value {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .stat-card .value.alert { color: var(--accent); }
+    .stat-card .value.ok    { color: var(--green); }
+
+    .log-box {
+      width: 100%;
+      max-width: 700px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px 16px;
+      font-size: 11px;
+      color: var(--muted);
+      height: 72px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column-reverse;
+    }
+
+    .log-line { line-height: 1.8; }
+    .log-line.warn { color: var(--accent); }
+    .log-line.ok   { color: var(--green); }
+    .log-line.info { color: var(--amber); }
+
+    /* Hidden elements */
+    #streamImage, #snapshotImage, #offscreenCanvas { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>CRACK<span>DETECT</span> // ESP32</h1>
+    <div id="status-pill" class="loading">LOADING MODEL…</div>
+  </header>
+
+  <div class="canvas-wrap">
+    <div id="overlay-msg">Waiting for stream…</div>
+    <!-- Main display canvas — stream drawn here + boxes on top -->
+    <canvas id="displayCanvas" width="640" height="480"></canvas>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="label">Detections</div>
+      <div class="value" id="stat-detections">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Confidence</div>
+      <div class="value" id="stat-conf">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">FPS</div>
+      <div class="value" id="stat-fps">—</div>
+    </div>
+  </div>
+
+  <div class="log-box" id="log-box"></div>
+
+  <!--
+    TWO hidden images:
+    - streamImage  → MJPEG stream, used for live display only
+    - snapshotImage → fresh /capture JPEG each frame, used for AI inference
+  -->
+  <img id="streamImage"   crossorigin="anonymous" alt="" />
+  <img id="snapshotImage" crossorigin="anonymous" alt="" />
+
+  <!-- Offscreen canvas: upscales the 320x240 snapshot to 640x480 for the model -->
+  <canvas id="offscreenCanvas" width="640" height="480"></canvas>
+
+  <script>
+    window.onerror = (msg, src, line, col, err) => {
+      alert('JS ERROR: ' + msg + '\nLine: ' + line);
+    };
+    const { InferenceEngine, CVImage } = inferencejs;
+    const inferEngine = new InferenceEngine();
+
+    const streamImage    = document.getElementById('streamImage');
+    const snapshotImage  = document.getElementById('snapshotImage');
+    const offscreen      = document.getElementById('offscreenCanvas');
+    const offCtx         = offscreen.getContext('2d');
+    const canvas         = document.getElementById('displayCanvas');
+    const ctx            = canvas.getContext('2d');
+    const overlayMsg     = document.getElementById('overlay-msg');
+    const statusPill     = document.getElementById('status-pill');
+    const statDet        = document.getElementById('stat-detections');
+    const statConf       = document.getElementById('stat-conf');
+    const statFps        = document.getElementById('stat-fps');
+    const logBox         = document.getElementById('log-box');
+
+    // ── Config ────────────────────────────────────────────────
+    const ESP32_STREAM   = 'http://192.168.137.102';          // MJPEG stream → display
+    const ESP32_SNAPSHOT = 'http://192.168.137.102/capture';  // JPEG snapshot → AI
+    const MODEL_NAME     = 'crack-detection-kjvhd';
+    const MODEL_VERSION  = '3';
+    const API_KEY        = 'rf_yFmkD8b3SHdZp1nRFUdoVsmGBk83';
+    const CONFIDENCE     = 0.15; // lower = more sensitive
+    // ─────────────────────────────────────────────────────────
+
+    let workerId;
+    let frameCount = 0;
+    let fpsTimer   = Date.now();
+    // Stores latest boxes so the display loop can redraw them
+    let latestPredictions = [];
+
+    function log(msg, type = '') {
+      const line = document.createElement('div');
+      line.className = 'log-line' + (type ? ' ' + type : '');
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBox.prepend(line);
+      if (logBox.children.length > 30) logBox.lastChild.remove();
+    }
+
+    // ── Scale a bounding box from snapshot coords to display canvas coords ──
+    // Snapshot is 320x240, canvas is 640x480 → scale factor 2x
+    function scaleBox(pred) {
+      const scaleX = canvas.width  / offscreen.width;
+      const scaleY = canvas.height / offscreen.height;
+      return {
+        ...pred,
+        x:      pred.x      * scaleX,
+        y:      pred.y      * scaleY,
+        width:  pred.width  * scaleX,
+        height: pred.height * scaleY,
+      };
+    }
+
+    // ── Draw boxes on top of whatever is on the display canvas ──
+    function drawBoxes(predictions) {
+      predictions.forEach(pred => {
+        const { x, y, width: w, height: h, class: cls, confidence } = scaleBox(pred);
+        const xMin = x - w / 2;
+        const yMin = y - h / 2;
+
+        ctx.strokeStyle = '#FF3333';
+        ctx.lineWidth   = 2.5;
+        ctx.strokeRect(xMin, yMin, w, h);
+
+        const label = `${cls}  ${(confidence * 100).toFixed(1)}%`;
+        ctx.font = 'bold 13px "JetBrains Mono", monospace';
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = '#FF3333';
+        ctx.fillRect(xMin - 1, yMin - 22, tw + 12, 22);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, xMin + 5, yMin - 6);
+      });
+    }
+
+    // ── Display loop: draws MJPEG stream frames + latest boxes at ~30fps ──
+    function displayLoop() {
+      if (streamImage.naturalWidth > 0) {
+        overlayMsg.style.display = 'none';
+        ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+        drawBoxes(latestPredictions);
+      }
+      requestAnimationFrame(displayLoop);
+    }
+
+    // ── Fetch a fresh JPEG snapshot from /capture ─────────────
+    function loadSnapshot() {
+      return new Promise((resolve, reject) => {
+        snapshotImage.onload  = () => resolve();
+        snapshotImage.onerror = () => reject(new Error('Snapshot fetch failed'));
+        snapshotImage.src = `${ESP32_SNAPSHOT}?t=${Date.now()}`;
+      });
+    }
+
+    // ── Load Model ────────────────────────────────────────────
+    async function loadModel() {
+      log('Downloading model…', 'info');
+      try {
+        workerId = await inferEngine.startWorker(MODEL_NAME, MODEL_VERSION, API_KEY);
+        log('Model loaded. Starting inference loop.', 'ok');
+        statusPill.textContent = 'LIVE';
+        statusPill.className   = 'ready';
+
+        // Start MJPEG stream for display
+        streamImage.src = ESP32_STREAM;
+
+        // Kick off both loops independently
+        displayLoop();
+        inferenceLoop();
+      } catch (err) {
+        log('Model load failed: ' + err.message, 'warn');
+        statusPill.textContent = 'ERROR';
+        statusPill.className   = 'error';
+      }
+    }
+
+    // ── Inference loop: runs as fast as model allows ──────────
+    async function inferenceLoop() {
+  while (true) {
+    try {
+      await loadSnapshot();
+      console.log('Snapshot size:', snapshotImage.naturalWidth, 'x', snapshotImage.naturalHeight);
+
+      // Try passing the img element directly — skip offscreen canvas entirely
+      const roboflowImage = new CVImage(snapshotImage);
+      console.log('CVImage created:', roboflowImage);
+
+      const predictions = await inferEngine.infer(workerId, roboflowImage, {
+        confidence: 0.15
+      });
+      console.log('Predictions:', predictions);
+
+      latestPredictions = predictions;
+
+    } catch (err) {
+      console.error('Inference error:', err); // full error object
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+}
+
+    loadModel();
+  </script>
+</body>
+</html>

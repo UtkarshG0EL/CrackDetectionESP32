@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roboflow Crack Detection ESP32</title>
+    <script src="https://cdn.jsdelivr.net/npm/inferencejs"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #1a1a2e;
+            color: #eee;
+            margin: 0;
+            padding: 20px;
+        }
+        h2 {
+            color: #e94560;
+            margin-bottom: 10px;
+        }
+        .video-container {
+            display: inline-block;
+            margin-top: 20px;
+            position: relative;
+        }
+        canvas {
+            background: #000;
+            border-radius: 8px;
+            border: 2px solid #e94560;
+            display: block;
+        }
+        #statusBar {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background: #16213e;
+            border-radius: 6px;
+            font-size: 14px;
+            display: inline-block;
+            min-width: 300px;
+        }
+        #statusDot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #555;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        #statusDot.green  { background: #00ff88; }
+        #statusDot.red    { background: #ff4444; }
+        #statusDot.yellow { background: #ffcc00; }
+    </style>
+</head>
+<body>
+
+    <h2>Live Crack Detection (ESP32)</h2>
+
+    <div class="video-container">
+        <!-- Hidden MJPEG stream receiver -->
+        <img id="streamImage" crossorigin="anonymous" style="display:none;" />
+
+        <!-- Main display canvas -->
+        <canvas id="displayCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <div id="statusBar">
+        <span id="statusDot"></span>
+        <span id="statusText">Initializing...</span>
+    </div>
+
+    <script>
+        const { InferenceEngine, CVImage } = inferencejs;
+        const inferEngine = new InferenceEngine();
+
+        const streamImage = document.getElementById("streamImage");
+        const canvas     = document.getElementById("displayCanvas");
+        const ctx        = canvas.getContext("2d");
+        const statusDot  = document.getElementById("statusDot");
+        const statusText = document.getElementById("statusText");
+
+        let workerId    = null;
+        let isProcessing = false;
+        let frameCount  = 0;
+        let detectionCount = 0;
+
+        // ── Helpers ──────────────────────────────────────────────
+        function setStatus(color, text) {
+            statusDot.className  = color;
+            statusText.textContent = text;
+        }
+
+        // ── 1. Load Model ─────────────────────────────────────────
+        async function loadModel() {
+            const modelName      = "crack-detection-kjvhd";
+            const version        = "3";
+            const publishableKey = "rf_yFmkD8b3SHdZp1nRFUdoVsmGBk83";
+
+            setStatus("yellow", "Downloading model...");
+            console.log("Downloading and loading model...");
+
+            try {
+                workerId = await inferEngine.startWorker(modelName, version, publishableKey);
+                console.log("Model loaded successfully!");
+                setStatus("yellow", "Model ready — connecting to stream...");
+                startVideoStream();
+            } catch (err) {
+                console.error("Model load failed:", err);
+                setStatus("red", "Model load failed — check console");
+            }
+        }
+
+        // ── 2. Connect to ESP32 Stream ────────────────────────────
+        function startVideoStream() {
+            streamImage.src = "http://192.168.137.181/";
+
+            streamImage.onerror = () => {
+                setStatus("red", "Stream error — check ESP32 IP/connection");
+            };
+
+            // Wait 1.5 s for MJPEG to stabilise then start loop
+            setTimeout(() => {
+                console.log("Stream connected, starting AI detection...");
+                setStatus("green", "Stream connected — running inference...");
+                detectFrame();
+            }, 1500);
+        }
+
+        // ── 3. Main Inference Loop ────────────────────────────────
+        async function detectFrame() {
+
+            // Always paint the latest stream frame
+            if (streamImage.naturalWidth > 0) {
+                ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+            }
+
+            if (!isProcessing && workerId) {
+                isProcessing = true;
+                frameCount++;
+
+                try {
+                    // Capture current frame as transferable ImageBitmap
+                    const bitmap        = await createImageBitmap(canvas);
+                    const roboflowImage = new CVImage(bitmap);
+
+                    // Run inference
+                    const predictions = await inferEngine.infer(workerId, roboflowImage);
+                    bitmap.close();
+
+                    // Unwrap nested array  [[...]] → [...]
+                    let boxes = predictions;
+                    if (Array.isArray(predictions) &&
+                        predictions.length > 0 &&
+                        Array.isArray(predictions[0])) {
+                        boxes = predictions[0];
+                    }
+
+                    // Filter low-confidence results manually
+                    boxes = boxes.filter(p => p.confidence >= 0.1);
+
+                    // Log every 30 frames
+                    if (frameCount % 30 === 0) {
+                        console.log(`Frame ${frameCount} — detections: ${boxes.length}`);
+                    }
+
+                    // Re-draw fresh frame then overlay results
+                    if (streamImage.naturalWidth > 0) {
+                        ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+                    }
+
+                    if (boxes && boxes.length > 0) {
+                        detectionCount += boxes.length;
+
+                        // Green border flash = detection confirmed
+                        ctx.strokeStyle = "#00FF88";
+                        ctx.lineWidth   = 4;
+                        ctx.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+
+                        boxes.forEach(prediction => {
+                            const { bbox, class: className, confidence } = prediction;
+
+                            // Coordinates live inside bbox object
+                            const { x, y, width, height } = bbox;
+                            const xMin = x - width  / 2;
+                            const yMin = y - height / 2;
+
+                            // Bounding box
+                            ctx.strokeStyle = "#FF3333";
+                            ctx.lineWidth   = 3;
+                            ctx.strokeRect(xMin, yMin, width, height);
+
+                            // Label background
+                            ctx.fillStyle = "#FF3333";
+                            ctx.font      = "bold 16px Arial";
+                            const label     = `${className}  ${(confidence * 100).toFixed(1)}%`;
+                            const textW     = ctx.measureText(label).width;
+                            ctx.fillRect(xMin, yMin - 22, textW + 12, 22);
+
+                            // Label text
+                            ctx.fillStyle = "#FFFFFF";
+                            ctx.fillText(label, xMin + 6, yMin - 5);
+                        });
+
+                        setStatus("red", `⚠ CRACK DETECTED — ${boxes.length} region(s)  |  total hits: ${detectionCount}`);
+
+                    } else {
+                        // No detection overlay
+                        ctx.fillStyle = "rgba(0,0,0,0.45)";
+                        ctx.fillRect(8, 8, 210, 28);
+                        ctx.fillStyle = "#AAAAAA";
+                        ctx.font      = "14px Arial";
+                        ctx.fillText("No crack detected", 14, 27);
+
+                        setStatus("green", `Running — frame ${frameCount}  |  no crack detected`);
+                    }
+
+                } catch (err) {
+                    console.error("Inference error:", err);
+                    setStatus("red", "Inference error — see console");
+                }
+
+                isProcessing = false;
+            }
+
+            requestAnimationFrame(detectFrame);
+        }
+
+        // ── Boot ──────────────────────────────────────────────────
+        loadModel();
+    </script>
+</body>
+</html>

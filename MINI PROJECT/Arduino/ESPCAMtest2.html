@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crack Detection — ESP32</title>
+  <script src="https://cdn.jsdelivr.net/npm/inferencejs"></script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --surface: #111;
+      --border: #222;
+      --accent: #ff3333;
+      --accent-dim: rgba(255,51,51,0.15);
+      --text: #e8e8e8;
+      --muted: #555;
+      --green: #00e676;
+      --amber: #ffab00;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+      gap: 20px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 700px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+
+    h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+    }
+
+    h1 span { color: var(--accent); }
+
+    #status-pill {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--muted);
+      color: var(--muted);
+      transition: all 0.3s;
+    }
+    #status-pill.ready   { border-color: var(--green); color: var(--green); }
+    #status-pill.error   { border-color: var(--accent); color: var(--accent); }
+    #status-pill.loading { border-color: var(--amber); color: var(--amber); }
+
+    .canvas-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 700px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* Corner tick marks */
+    .canvas-wrap::before,
+    .canvas-wrap::after {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-color: var(--accent);
+      border-style: solid;
+      z-index: 2;
+    }
+    .canvas-wrap::before { top: 0; left: 0; border-width: 2px 0 0 2px; }
+    .canvas-wrap::after  { bottom: 0; right: 0; border-width: 0 2px 2px 0; }
+
+    #overlay-msg {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--muted);
+      background: rgba(0,0,0,0.6);
+      z-index: 1;
+    }
+
+    .stats-row {
+      width: 100%;
+      max-width: 700px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px 16px;
+    }
+
+    .stat-card .label {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .stat-card .value {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .stat-card .value.alert { color: var(--accent); }
+    .stat-card .value.ok    { color: var(--green); }
+
+    .log-box {
+      width: 100%;
+      max-width: 700px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 12px 16px;
+      font-size: 11px;
+      color: var(--muted);
+      height: 72px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column-reverse;
+    }
+
+    .log-line { line-height: 1.8; }
+    .log-line.warn { color: var(--accent); }
+    .log-line.ok   { color: var(--green); }
+    .log-line.info { color: var(--amber); }
+
+    /* Hidden stream img */
+    #streamImage { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>CRACK<span>DETECT</span> // ESP32</h1>
+    <div id="status-pill" class="loading">LOADING MODEL…</div>
+  </header>
+
+  <div class="canvas-wrap">
+    <div id="overlay-msg">Waiting for stream…</div>
+    <canvas id="displayCanvas" width="640" height="480"></canvas>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="label">Detections</div>
+      <div class="value" id="stat-detections">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Confidence</div>
+      <div class="value" id="stat-conf">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">FPS</div>
+      <div class="value" id="stat-fps">—</div>
+    </div>
+  </div>
+
+  <div class="log-box" id="log-box"></div>
+
+  <!-- Hidden image used as pixel source -->
+  <img id="streamImage" crossorigin="anonymous" alt="" />
+
+  <script>
+    const { InferenceEngine, CVImage } = inferencejs;
+    const inferEngine = new InferenceEngine();
+
+    const streamImage   = document.getElementById('streamImage');
+    const canvas        = document.getElementById('displayCanvas');
+    const ctx           = canvas.getContext('2d');
+    const overlayMsg    = document.getElementById('overlay-msg');
+    const statusPill    = document.getElementById('status-pill');
+    const statDet       = document.getElementById('stat-detections');
+    const statConf      = document.getElementById('stat-conf');
+    const statFps       = document.getElementById('stat-fps');
+    const logBox        = document.getElementById('log-box');
+
+    // ── Config ────────────────────────────────────────────────
+    const ESP32_SNAPSHOT = 'http://192.168.137.102/capture'; // snapshot endpoint
+    const MODEL_NAME     = 'crack-detection-kjvhd';
+    const MODEL_VERSION  = '3';
+    const API_KEY        = 'rf_yFmkD8b3SHdZp1nRFUdoVsmGBk83';
+    // ─────────────────────────────────────────────────────────
+
+    let workerId;
+    let frameCount = 0;
+    let fpsTimer   = Date.now();
+
+    function log(msg, type = '') {
+      const line = document.createElement('div');
+      line.className = 'log-line' + (type ? ' ' + type : '');
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBox.prepend(line);
+      if (logBox.children.length > 30) logBox.lastChild.remove();
+    }
+
+    // ── Load Model ────────────────────────────────────────────
+    async function loadModel() {
+      log('Downloading model…', 'info');
+      try {
+        workerId = await inferEngine.startWorker(MODEL_NAME, MODEL_VERSION, API_KEY);
+        log('Model loaded. Starting inference loop.', 'ok');
+        statusPill.textContent = 'LIVE';
+        statusPill.className   = 'ready';
+        detectLoop();
+        await loadSnapshot();
+        console.log('Image size:', streamImage.naturalWidth, 'x', streamImage.naturalHeight);
+      } catch (err) {
+        log('Model load failed: ' + err.message, 'warn');
+        statusPill.textContent = 'ERROR';
+        statusPill.className   = 'error';
+      }
+    }
+
+    // ── Fetch a fresh JPEG snapshot from ESP32 ────────────────
+    function loadSnapshot() {
+      return new Promise((resolve, reject) => {
+        // Cache-bust so browser doesn't serve a stale frame
+        streamImage.onload  = () => resolve();
+        streamImage.onerror = () => reject(new Error('Snapshot fetch failed'));
+        streamImage.src = `${ESP32_SNAPSHOT}?t=${Date.now()}`;
+      });
+    }
+
+    // ── Main inference loop ───────────────────────────────────
+    async function detectLoop() {
+      while (true) {
+        try {
+          // FIX 1: Fetch a fresh snapshot each frame instead of
+          // relying on the MJPEG stream img — CVImage can read it reliably.
+          await loadSnapshot();
+
+          // Hide "waiting" overlay once we have a frame
+          overlayMsg.style.display = 'none';
+
+          // FIX 2: Draw frame ONCE before drawing boxes
+          ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+
+          // FIX 3: Pass img element directly to CVImage —
+          // avoids createImageBitmap(canvas) which throws on CORS-tainted canvas
+          const roboflowImage = new CVImage(streamImage);
+          const predictions = await inferEngine.infer(workerId, roboflowImage, {
+            confidence: 0.15
+          });
+
+          // ── Draw bounding boxes ──────────────────────────────
+          let maxConf = 0;
+          predictions.forEach(pred => {
+            const { x, y, width: w, height: h, class: cls, confidence } = pred;
+            const xMin = x - w / 2;
+            const yMin = y - h / 2;
+
+            if (confidence > maxConf) maxConf = confidence;
+
+            ctx.strokeStyle = '#FF3333';
+            ctx.lineWidth   = 2.5;
+            ctx.strokeRect(xMin, yMin, w, h);
+
+            const label = `${cls}  ${(confidence * 100).toFixed(1)}%`;
+            ctx.font = 'bold 13px "JetBrains Mono", monospace';
+            const tw = ctx.measureText(label).width;
+
+            ctx.fillStyle = '#FF3333';
+            ctx.fillRect(xMin - 1, yMin - 22, tw + 12, 22);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, xMin + 5, yMin - 6);
+          });
+
+          // ── Update stats ─────────────────────────────────────
+          const detCount = predictions.length;
+          statDet.textContent  = detCount;
+          statDet.className    = 'value' + (detCount > 0 ? ' alert' : ' ok');
+          statConf.textContent = maxConf > 0 ? (maxConf * 100).toFixed(1) + '%' : '—';
+          statConf.className   = 'value' + (maxConf > 0.5 ? ' alert' : '');
+
+          if (detCount > 0) {
+            log(`${detCount} crack(s) detected — max conf ${(maxConf*100).toFixed(1)}%`, 'warn');
+          }
+
+          // ── FPS counter ──────────────────────────────────────
+          frameCount++;
+          const now  = Date.now();
+          const elapsed = (now - fpsTimer) / 1000;
+          if (elapsed >= 1) {
+            statFps.textContent = (frameCount / elapsed).toFixed(1);
+            frameCount = 0;
+            fpsTimer   = now;
+          }
+
+        } catch (err) {
+          log('Frame error: ' + err.message, 'warn');
+          overlayMsg.style.display = 'flex';
+          overlayMsg.textContent   = 'Stream error — retrying…';
+          // Brief pause before retrying on error
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    }
+
+    loadModel();
+  </script>
+</body>
+</html>

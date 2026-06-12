@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roboflow Crack Detection ESP32</title>
+    <script src="https://cdn.jsdelivr.net/npm/inferencejs"></script>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            text-align: center;
+            background-color: #f4f4f9;
+        }
+        .video-container { 
+            display: inline-block; 
+            margin-top: 20px;
+        }
+        /* The canvas will act as our video screen */
+        canvas { 
+            background: #000; 
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Live Crack Detection (ESP32)</h2>
+    
+    <div class="video-container">
+        <!-- 1. The hidden stream: We load the stream here but don't show it -->
+        <img id="streamImage" crossorigin="anonymous" style="display: none;" />
+        
+        <!-- 2. The display screen: We draw the video and boxes here -->
+        <canvas id="displayCanvas" width="640" height="480"></canvas>
+    </div>
+
+    <script>
+        const { InferenceEngine, CVImage } = inferencejs;
+        const inferEngine = new InferenceEngine();
+
+        const streamImage = document.getElementById("streamImage");
+        const canvas = document.getElementById("displayCanvas");
+        const ctx = canvas.getContext("2d");
+
+        let workerId;
+
+        // Authenticate and Load the Model
+        async function loadModel() {
+            const modelName = "crack-detection-kjvhd";         
+            const version = "3";            
+            const publishableKey = "rf_GCe31V4PrxZQVIU3gSsiX4o9BZ32"; 
+
+            console.log("Downloading and loading model...");
+            workerId = await inferEngine.startWorker(modelName, version, publishableKey);
+            console.log("Model loaded successfully!");
+
+            startVideoStream();
+        }
+
+        // Start the Stream
+        function startVideoStream() {
+            // Point the hidden image directly to your ESP32 stream
+            streamImage.src = "http://192.168.137.27";
+            
+            // Give the stream a brief moment to connect, AI loopthen start the 
+            setTimeout(() => {
+                console.log("Stream connected, starting AI detection...");
+                detectFrame(); 
+            }, 1500);
+        }
+
+let isProcessing = false;
+let frameCount = 0;
+
+async function detectFrame() {
+    if (streamImage.naturalWidth > 0) {
+        ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+    }
+
+    if (!isProcessing) {
+        isProcessing = true;
+        frameCount++;
+
+        try {
+            const bitmap = await createImageBitmap(canvas);
+            const roboflowImage = new CVImage(bitmap);
+            const predictions = await inferEngine.infer(workerId, roboflowImage);
+            bitmap.close();
+
+            let boxes = predictions;
+            if (Array.isArray(predictions) && predictions.length > 0 && Array.isArray(predictions[0])) {
+                boxes = predictions[0];
+            }
+
+            boxes = boxes.filter(p => p.confidence >= 0.1);
+            
+            if (frameCount % 30 === 0) {
+                console.log(`Frame ${frameCount} - detections: ${boxes.length}`);
+            }
+
+            ctx.drawImage(streamImage, 0, 0, canvas.width, canvas.height);
+
+            if (boxes && boxes.length > 0) {
+                boxes.forEach(prediction => {
+                    const { bbox, class: className, confidence } = prediction;
+                    const { x, y, width, height } = bbox;
+                    const xMin = x - (width / 2);
+                    const yMin = y - (height / 2);
+
+                    ctx.strokeStyle = "#FF3333";
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(xMin, yMin, width, height);
+
+                    ctx.fillStyle = "#FF3333";
+                    ctx.font = "bold 16px Arial";
+                    const text = `${className} ${(confidence * 100).toFixed(1)}%`;
+                    const textWidth = ctx.measureText(text).width;
+                    ctx.fillRect(xMin, yMin - 20, textWidth + 10, 20);
+                    ctx.fillStyle = "#FFFFFF";
+                    ctx.fillText(text, xMin + 5, yMin - 5);
+                });
+            }
+
+        } catch (err) {
+            console.error("Inference error:", err);
+        }
+
+        isProcessing = false;
+    }
+
+    requestAnimationFrame(detectFrame);
+}
+
+        // Boot up
+        loadModel();
+    </script>
+</body>
+</html>
