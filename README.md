@@ -244,17 +244,11 @@ Offloading ML inference to the ground station reduces continuous current draw on
 
 ---
 
-## Project Team & Guidance
+## Project Team
 
+**Utkarsh Goel** (`1MS23ME123`)
 **Department of Mechanical Engineering**  
-**Ramaiah Institute of Technology (RIT), Bengaluru – 560054**  
-*(Affiliated to Visvesvaraya Technological University, Belagavi)*
-
-### Authors
-* **Prateek Ghale** (`1MS23ME086`)
-* **Samarth Sharma** (`1MS23ME098`)
-* **Shashanka C** (`1MS23ME106`)
-* **Utkarsh Goel** (`1MS23ME123`)
+**Ramaiah Institute of Technology (RIT), Bengaluru – 560054**
 
 ### Project Guide
 * **Dr. Aruna Kumara P.C.** – *Assistant Professor, Department of Mechanical Engineering, RIT Bengaluru*
